@@ -1,84 +1,198 @@
 # 🖱️ Hand Gesture Mouse Controller
-![GitHub Repo stars](https://img.shields.io/github/stars/Uni-Creator/HandGestureAutomation?style=social)  ![GitHub forks](https://img.shields.io/github/forks/Uni-Creator/HandGestureAutomation?style=social)
 
-A modern, intuitive way to control your computer mouse using hand gestures captured through your webcam. This project leverages cutting-edge computer vision and hand tracking technology to create a natural interface for computer interaction.
+Control your computer mouse entirely with hand gestures — no physical mouse needed.  
+Uses **MediaPipe** for real-time hand tracking and **OpenCV** for camera input, with three interchangeable mouse-control backends.
 
-## ✨ Features
+---
 
-- 🖱️ **Mouse Movement**: Precise cursor control using your index finger
-- 🔵 **Left Click**: Natural clicking motion with half-folded fingers
-- 🔴 **Right Click**: Intuitive two-finger gesture
-- ✋ **Drag and Drop**: Seamless drag operations using thumb combinations
-- 📜 **Scrolling**: Smooth scrolling with three-finger gestures
-- 🎯 **Hand Orientation Detection**: Smart position recognition prevents accidental inputs
-- 🎮 **Smooth Movement**: Enhanced cursor precision with intelligent smoothening
+##  Features
 
-## ✨ Key Features
+| Feature | Description |
+|---|---|
+| **Move Cursor** | Precise, smoothed cursor movement using your index finger |
+| **Left Click** | Half-fold your index finger to click |
+| **Right Click** | Raise index + middle fingers, then bring index tip close to pinky base |
+| **Drag & Drop** | Hold thumb + pinky up to drag; release to drop |
+| **Scroll** | Raise index + middle + ring fingers and move hand up/down |
+| **Orientation Guard** | Ignores input when hand is turned or flipped (palm facing away) |
+| **Smooth Movement** | Configurable smoothening factor prevents jitter |
 
+---
 
-## Installation
+## Gesture Reference
 
-1. Clone the repository:
-```bash
-git clone https://github.com/yourusername/hand-gesture-mouse-controller.git
-cd hand-gesture-mouse-controller
+> **Finger array format:** `[Thumb, Index, Middle, Ring, Pinky]`  
+> `1` = finger extended/up · `0` = finger folded/down  
+> The array represents what `fingers_up()` returns for each gesture.
+
+### Move Cursor
 ```
-2. Install the required dependencies:
-```bash
-pip install -r requirements.txt
+[0, 1, 0, 0, 0]  — only index finger up (fully extended, not half-folded)
 ```
+Point your **index finger** at the camera. The cursor follows your fingertip within the active zone (the pink rectangle on screen).
 
-3. Run the application:
-```bash
-python MouseController2.py
+---
+
+### Left Click
 ```
-
-## Usage
-
-1. Run the main script:
-```bash
-python MouseController2.py
+half-closed: [0, 1, 0, 0, 0]  — index finger half-folded (bent at middle joint)
 ```
+Slightly **curl your index finger** (don't fully fold it). The system detects the half-closed state separately from a fully extended finger, so moving and clicking don't conflict.
 
-2. Position your hand in front of the webcam
-3. Use the following gestures:
-   - **Move Cursor**: Raise only index finger
-   - **Left Click**: Half-fold fingers in [0,1,0,0,0] configuration
-   - **Right Click**: Raise index and middle fingers close together
-   - **Drag**: Use thumb with specific finger combination
-   - **Scroll**: Raise three fingers (index, middle, ring)
+---
 
-## Configuration
+### Right Click
+```
+fingers_up → [0, 1, 1, 0, 0]  — index + middle fingers up
++ index fingertip brought close to pinky base (landmark 17)
+```
+Raise your **index and middle fingers** together, then **pinch the index tip toward the base of your pinky**. The click fires when the distance between those two points drops below 30 px.
 
-You can adjust various parameters in the code:
-- `frameR`: Frame reduction for gesture detection area
-- `smoothening`: Cursor movement smoothening factor
-- Gesture configurations in `fingerConfig` dictionary
+---
+
+### Drag & Drop
+```
+[0, 1, 0, 0, 1]  — index + pinky up, rest folded
+```
+Raise your **index finger and pinky** while keeping the other fingers down. The left mouse button is held as long as this gesture is held. Release (change gesture) to drop.
+
+---
+
+### Scroll
+```
+[0, 1, 1, 1, 0]  — index + middle + ring fingers up
+```
+Raise your **index, middle, and ring fingers** together. Move your hand **up** to scroll up and **down** to scroll down. The scroll speed is proportional to movement speed.
+
+---
+
+### No Action (hand fully open — safety pose)
+```
+[1, 1, 1, 1, 1]  — all fingers up
+```
+All five fingers fully extended. The system **ignores** this pose so you can rest your hand in a natural open position without triggering any action.
+
+---
+
+## Backend Comparison
+
+Three mouse-control backends are provided. They differ in how they send input events to the OS:
+
+| Backend | File | Accuracy | Latency | Platform | Notes |
+|---|---|---|---|---|---|
+| **pyautogui** | `mouse_control_pyautogui.py` | ⭐⭐ | Higher | Cross-platform | Easiest to install; uses screenshot-based failsafe; slowest of the three |
+| **pynput** | `mouse_control_pynput.py` | ⭐⭐⭐ | Medium | Cross-platform | Good balance; works well on most systems |
+| **Win32 API** | `mouse_control_win32.py` | ⭐⭐⭐⭐ | Lowest | **Windows only** | Sends raw Win32 mouse events; most responsive and accurate; **recommended on Windows** |
+
+**Ranking: `pyautogui` < `pynput` ≈ `Win32`**
+
+> `Win32` is the most accurate because it bypasses Python-level abstractions and calls the OS mouse event API directly. `pynput` is close behind and works cross-platform. `pyautogui` adds extra overhead (screenshot-based coordinate mapping, built-in delays) making it the least responsive.
+
+---
 
 ## Project Structure
 
-- `MouseController2.py`: Main application file
-- `HandTrackingModule.py`: Hand tracking and gesture detection module
-- `HandGestureMin.py`: Minimal implementation example
-- `HandGestureMouseControl.py`: Alternative implementation
-- `MouseController.py`: Legacy version
+```
+HandGestureAutomation/
+│
+├── hand_tracker.py              # Core hand-tracking module (MediaPipe wrapper)
+│                                #   → HandDetector class: find_hands, find_position,
+│                                #     fingers_up, fingers_half_closed, find_distance,
+│                                #     is_hand_flipped, is_hand_turned
+│
+├── mouse_control_win32.py       # Recommended — Win32 API backend (Windows only)
+├── mouse_control_pynput.py      # pynput backend (cross-platform)
+├── mouse_control_pyautogui.py   # pyautogui backend (cross-platform, slower)
+│
+├── hand_tracking_demo.py        # Minimal raw MediaPipe demo (no helper module)
+├── palm_orientation_test.py     # Standalone palm front/back orientation tester
+│
+└── README.md
+```
 
-## Contributing
+---
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+## Configuration
+
+All three controller files expose the same top-level constants you can tune:
+
+| Constant | Default | Description |
+|---|---|---|
+| `FRAME_R` | `100` px | Margin around the camera frame edge — gestures outside this border are ignored |
+| `SMOOTHENING` | `6` or `7` | Higher = smoother but slower cursor; lower = snappier but jittery |
+
+Gesture mappings live in the `FINGER_CONFIG` dict at the top of each file and can be freely remapped.
+
+---
+
+## Installation
+
+**1. Clone the repository**
+```bash
+git clone https://github.com/Uni-Creator/HandGestureAutomation.git
+cd HandGestureAutomation
+```
+
+**2. Create and activate a virtual environment** *(recommended)*
+```bash
+python -m venv venv
+# Windows
+venv\Scripts\activate
+# macOS / Linux
+source venv/bin/activate
+```
+
+**3. Install dependencies**
+```bash
+pip install opencv-python mediapipe numpy pyautogui pynput 
+# Windows only (for the Win32 backend):
+pip install pywin32
+```
+
+**4. Run your preferred backend**
+```bash
+# Best on Windows:
+python mouse_control_win32.py
+
+# Cross-platform:
+python mouse_control_pynput.py
+python mouse_control_pyautogui.py
+```
+
+Press **`Q`** or **`Esc`** to quit.
+
+---
+
+## Tips for Best Results
+
+- **Lighting**: Use good, even lighting — avoid strong backlighting behind your hand.
+- **Distance**: Keep your hand roughly **40–70 cm** from the webcam.
+- **Background**: A plain, uncluttered background improves detection reliability.
+- **Orientation**: Keep your palm **facing the camera** (palm front). The orientation guard will suppress input if your hand is turned or flipped.
+- **Active zone**: The **pink/magenta rectangle** shown on screen is the active gesture area. Move your hand within it to control the cursor across the full screen.
+
+---
+
+## Tech Stack
+
+| Library | Purpose |
+|---|---|
+| [MediaPipe](https://mediapipe.dev/) | Real-time hand landmark detection (21 points) |
+| [OpenCV](https://opencv.org/) | Webcam capture and frame rendering |
+| [NumPy](https://numpy.org/) | Coordinate interpolation and clipping |
+| [pynput](https://pynput.readthedocs.io/) | Cross-platform mouse input (pynput backend) |
+| [pyautogui](https://pyautogui.readthedocs.io/) | Cross-platform mouse input (pyautogui backend) |
+| [pywin32](https://github.com/mhammond/pywin32) | Win32 API mouse events (Win32 backend) |
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
 
-## Acknowledgments
+---
 
-- MediaPipe for hand tracking capabilities
-- OpenCV for computer vision functionalities
-- PyMouse and PyKeyboard for system control
+## Acknowledgements
 
-## Notes
-
-- Ensure good lighting conditions for optimal hand detection
-- Keep your hand within the camera frame
-- The application works best when your hand is clearly visible and properly oriented
+- [Google MediaPipe](https://mediapipe.dev/) for the hand tracking model
+- [OpenCV](https://opencv.org/) for computer vision utilities
