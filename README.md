@@ -22,7 +22,11 @@ Uses **MediaPipe** for real-time hand tracking and **OpenCV** for camera input, 
 
 Watch a demo of the hand gesture mouse controller in action:
 
-https://github.com/user-attachments/assets/96274370-97a2-4afa-a9b6-9c7736a49ef1
+
+
+https://github.com/user-attachments/assets/e914f0d4-db16-4bc7-b61d-b92f7e13c1c5
+
+
 
 ## Gesture Reference
 
