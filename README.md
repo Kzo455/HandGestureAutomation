@@ -18,6 +18,11 @@ Uses **MediaPipe** for real-time hand tracking and **OpenCV** for camera input, 
 | **Smooth Movement** | Configurable smoothening factor prevents jitter |
 
 ---
+## Demo
+
+Watch a demo of the hand gesture mouse controller in action:
+
+https://github.com/user-attachments/assets/96274370-97a2-4afa-a9b6-9c7736a49ef1
 
 ## Gesture Reference
 
