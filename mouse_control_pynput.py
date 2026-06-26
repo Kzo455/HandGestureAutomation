@@ -205,7 +205,7 @@ def main():
                     y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
                     c_loc_x = p_loc_x + (x3 - p_loc_x) / SMOOTHENING
                     c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
-                    _mouse.position = (c_loc_x, c_loc_y)
+                    _mouse.position = (int(c_loc_x), int(c_loc_y))
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
                     p_loc_x, p_loc_y = c_loc_x, c_loc_y
 
@@ -247,7 +247,7 @@ def main():
                         y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
                         c_loc_x = p_loc_x + (x3 - p_loc_x) / SMOOTHENING
                         c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
-                        _mouse.position = (c_loc_x, c_loc_y)
+                        _mouse.position = (int(c_loc_x), int(c_loc_y))
                         p_loc_x, p_loc_y = c_loc_x, c_loc_y
 
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)

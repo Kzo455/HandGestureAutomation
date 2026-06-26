@@ -178,15 +178,33 @@ class HandDetector:
         if not self.lm_list:
             return []
 
-        fingers = []
-        hand_type = self.results.multi_handedness[0].classification[0].label
+        if self.results is None or not self.results.multi_handedness or not self.results.multi_hand_landmarks:
+            return []
 
-        # Thumb — direction depends on hand type
-        thumb_tip_x = self.lm_list[self.TIP_IDS[0]][1]
-        thumb_ip_x = self.lm_list[self.TIP_IDS[0] - 1][1]
-        if (thumb_tip_x > thumb_ip_x and hand_type == "Left") or (
-            thumb_tip_x < thumb_ip_x and hand_type == "Right"
-        ):
+        fingers = []
+        
+        # Use 3D vector projection to determine thumb extension state (invariant to hand rotation)
+        landmarks = self.results.multi_hand_landmarks[0].landmark
+        p4 = landmarks[4]     # Thumb tip
+        p5 = landmarks[5]     # Index MCP
+        p17 = landmarks[17]   # Pinky MCP
+
+        # Calculate vectors
+        u_x, u_y, u_z = p17.x - p5.x, p17.y - p5.y, p17.z - p5.z
+        v_x, v_y, v_z = p4.x - p5.x, p4.y - p5.y, p4.z - p5.z
+
+        palm_width = math.sqrt(u_x**2 + u_y**2 + u_z**2)
+        if palm_width > 0:
+            dot_product = u_x * v_x + u_y * v_y + u_z * v_z
+            projection = dot_product / palm_width
+            # The thumb is on the opposite side of the index finger from the pinky.
+            # Hence, when the thumb is extended, the projection ratio is highly negative (< -0.35).
+            # When the thumb is tucked/folded, it is close to 0 or positive.
+            is_thumb_extended = (projection / palm_width) < -0.35
+        else:
+            is_thumb_extended = False
+
+        if is_thumb_extended:
             fingers.append(1)
         else:
             fingers.append(0)
@@ -202,6 +220,9 @@ class HandDetector:
     def fingers_half_closed(self):
         """Return a list of 5 booleans indicating which fingers are half-closed."""
         if not self.lm_list:
+            return []
+
+        if self.results is None or not self.results.multi_handedness:
             return []
 
         fingers = []
