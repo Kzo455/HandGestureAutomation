@@ -14,10 +14,32 @@ import cv2
 import numpy as np
 import pyautogui
 from pynput.mouse import Button, Controller
+import sounddevice as sd
 
 import hand_tracker as htm
 
 pyautogui.FAILSAFE = False
+
+# Sound helpers
+def play_sound_enable():
+    fs = 44100
+    duration = 0.15
+    t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+    freqs = np.linspace(600, 900, len(t))
+    wave = np.sin(2 * np.pi * freqs * t)
+    fade = np.ones_like(wave)
+    fade[-1000:] = np.linspace(1, 0, 1000)
+    sd.play(wave * 0.3 * fade, fs)
+
+def play_sound_disable():
+    fs = 44100
+    duration = 0.15
+    t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+    freqs = np.linspace(400, 250, len(t))
+    wave = np.sin(2 * np.pi * freqs * t)
+    fade = np.ones_like(wave)
+    fade[-1000:] = np.linspace(1, 0, 1000)
+    sd.play(wave * 0.3 * fade, fs)
 
 
 # Constants
@@ -27,14 +49,16 @@ FRAME_R = 100        # Active gesture area margin (pixels)
 SMOOTHENING = 7      # Cursor smoothing factor
 
 FINGER_CONFIG = {
-    "all_up":     [1, 1, 1, 1, 1],
-    "all_down":   [0, 0, 0, 0, 0],
-    "move":       [0, 1, 0, 0, 0],
-    "right_click":[0, 1, 1, 0, 0], # Index + Middle up
-    "left_click": [1, 1, 0, 0, 0], # Thumb + Index up
-    "drag":       [1, 0, 0, 0, 0],
-    "scroll_up":  [0, 1, 1, 1, 0], # Index + Middle + Ring up
-    "scroll_down":[0, 1, 1, 1, 1], # 4 fingers up (except thumb)
+    "all_up":          [1, 1, 1, 1, 1],
+    "all_down":        [0, 0, 0, 0, 0],
+    "move":            [0, 1, 0, 0, 0],
+    "right_click":     [0, 1, 0, 0, 1], # Index + Pinky up
+    "left_click":      [1, 1, 0, 0, 0], # Thumb + Index up
+    "drag":            [1, 0, 0, 0, 0],
+    "scroll_up":       [1, 1, 1, 0, 0], # Index + Middle + Ring up
+    "scroll_down":     [0, 1, 1, 0, 0], # 4 fingers up (except thumb)
+    "enable_control":  [1, 1, 1, 0, 1], # Thumb + Index + Middle + Pinky up (4 fingers)
+    "disable_control": [1, 1, 1, 1, 1], # 5 fingers up
 }
 
 
@@ -68,6 +92,7 @@ def main():
     left_clicked = False
     right_clicked = False
     scroll_counter = 0
+    control_enabled = False
 
     while True:
         success, img = cap.read()
@@ -86,10 +111,30 @@ def main():
         fingers = detector.fingers_up()
 
         if fingers:
+            # 1. Check for enable/disable gestures first
+            if fingers == FINGER_CONFIG["enable_control"]:
+                if not control_enabled:
+                    control_enabled = True
+                    play_sound_enable()
+            elif fingers == FINGER_CONFIG["disable_control"]:
+                if control_enabled:
+                    control_enabled = False
+                    play_sound_disable()
+                    if dragging:
+                        stop_drag()
+                        dragging = False
+
             angle = detector.get_hand_angle()
             is_valid_orientation = (55 <= angle <= 125)
 
-            rect_color = (255, 0, 255) if is_valid_orientation else (0, 0, 255)
+            # Determine color and screen message
+            if not control_enabled:
+                rect_color = (128, 128, 128)  # Gray
+            elif is_valid_orientation:
+                rect_color = (255, 0, 255)  # Magenta
+            else:
+                rect_color = (0, 0, 255)  # Red
+
             cv2.rectangle(
                 img,
                 (FRAME_R, FRAME_R),
@@ -98,10 +143,12 @@ def main():
                 2,
             )
 
-            if not is_valid_orientation:
+            if not control_enabled:
+                cv2.putText(img, "CONTROL OFF", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (128, 128, 128), 2)
+            elif not is_valid_orientation:
                 cv2.putText(img, "Tilted Hand", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
-            if is_valid_orientation:
+            if control_enabled and is_valid_orientation:
                 # Move — only index finger up, hand not fully open
                 if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
                     x3 = np.interp(x1, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
@@ -160,6 +207,10 @@ def main():
                         _mouse.scroll(0, -1)
                 else:
                     scroll_counter = 0
+            else:
+                left_clicked = False
+                right_clicked = False
+                scroll_counter = 0
 
         c_time = time.time()
         fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0

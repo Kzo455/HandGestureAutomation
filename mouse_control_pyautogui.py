@@ -28,8 +28,8 @@ SMOOTHENING = 6  # Cursor smoothing factor
 FINGER_CONFIG = {
     "move":       [0, 1, 0, 0, 0],
     "left_click": [1, 1, 0, 0, 0], # Thumb + Index up
-    "right_click":[0, 1, 1, 0, 0], # Index + Middle up
-    "drag":       [0, 1, 0, 0, 1],
+    "right_click":[0, 1, 0, 0, 1], # Index + Pinky up
+    "drag":       [1, 0, 0, 0, 0], # Thumb up
     "scroll_up":  [0, 1, 1, 1, 0], # Index + Middle + Ring up
     "scroll_down":[0, 1, 1, 1, 1], # 4 fingers up (except thumb)
 }
