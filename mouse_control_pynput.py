@@ -54,7 +54,7 @@ FINGER_CONFIG = {
     "move":            [0, 1, 0, 0, 0],
     "right_click":     [0, 1, 0, 0, 1], # Index + Pinky up
     "left_click":      [1, 1, 0, 0, 0], # Thumb + Index up
-    "drag":            [1, 0, 0, 0, 0],
+    "drag":            [0, 1, 1, 1, 0],
     "scroll_up":       [1, 1, 1, 0, 0], # Index + Middle + Ring up
     "scroll_down":     [0, 1, 1, 0, 0], # 4 fingers up (except thumb)
     "enable_control":  [1, 1, 1, 0, 1], # Thumb + Index + Middle + Pinky up (4 fingers)
@@ -93,6 +93,7 @@ def main():
     right_clicked = False
     scroll_counter = 0
     control_enabled = False
+    last_non_click_gesture = None
 
     while True:
         success, img = cap.read()
@@ -149,6 +150,13 @@ def main():
                 cv2.putText(img, "Tilted Hand", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
             if control_enabled and is_valid_orientation:
+                # Update last non-click gesture state to ensure clicks only trigger after moving
+                if fingers != FINGER_CONFIG["left_click"] and fingers != FINGER_CONFIG["right_click"]:
+                    if fingers == FINGER_CONFIG["move"]:
+                        last_non_click_gesture = "move"
+                    elif fingers in [FINGER_CONFIG["scroll_up"], FINGER_CONFIG["scroll_down"], FINGER_CONFIG["drag"]]:
+                        last_non_click_gesture = None
+
                 # Move — only index finger up, hand not fully open
                 if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
                     x3 = np.interp(x1, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
@@ -159,20 +167,22 @@ def main():
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
                     p_loc_x, p_loc_y = c_loc_x, c_loc_y
 
-                # Left click (one-time trigger)
+                # Left click (one-time trigger, only allowed if transition from "move")
                 if fingers == FINGER_CONFIG["left_click"]:
-                    if not left_clicked:
-                        _mouse.click(Button.left)
-                        left_clicked = True
+                    if last_non_click_gesture == "move":
+                        if not left_clicked:
+                            _mouse.click(Button.left)
+                            left_clicked = True
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
                 else:
                     left_clicked = False
 
-                # Right click (one-time trigger)
+                # Right click (one-time trigger, only allowed if transition from "move")
                 if fingers == FINGER_CONFIG["right_click"]:
-                    if not right_clicked:
-                        _mouse.click(Button.right)
-                        right_clicked = True
+                    if last_non_click_gesture == "move":
+                        if not right_clicked:
+                            _mouse.click(Button.right)
+                            right_clicked = True
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
                 else:
                     right_clicked = False
