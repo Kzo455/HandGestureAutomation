@@ -64,15 +64,30 @@ class HandDetector:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.join(current_dir, 'hand_landmarker.task')
         
-        base_options = python.BaseOptions(model_asset_path=model_path)
-        options = vision.HandLandmarkerOptions(
-            base_options=base_options,
-            running_mode=vision.RunningMode.IMAGE if self.mode else vision.RunningMode.VIDEO,
-            num_hands=self.max_hands,
-            min_hand_detection_confidence=self.detection_con,
-            min_hand_presence_confidence=self.track_con,
-        )
-        self.detector = vision.HandLandmarker.create_from_options(options)
+        try:
+            base_options = python.BaseOptions(
+                model_asset_path=model_path,
+                delegate=python.BaseOptions.Delegate.GPU
+            )
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.IMAGE if self.mode else vision.RunningMode.VIDEO,
+                num_hands=self.max_hands,
+                min_hand_detection_confidence=self.detection_con,
+                min_hand_presence_confidence=self.track_con,
+            )
+            self.detector = vision.HandLandmarker.create_from_options(options)
+        except Exception:
+            # Fallback to CPU
+            base_options = python.BaseOptions(model_asset_path=model_path)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                running_mode=vision.RunningMode.IMAGE if self.mode else vision.RunningMode.VIDEO,
+                num_hands=self.max_hands,
+                min_hand_detection_confidence=self.detection_con,
+                min_hand_presence_confidence=self.track_con,
+            )
+            self.detector = vision.HandLandmarker.create_from_options(options)
         self.results = None
         self.lm_list = []
         self._prev_timestamp = 0
@@ -104,7 +119,7 @@ class HandDetector:
 
     def find_hands(self, img, draw=True):
         """Process a BGR frame and optionally draw landmarks. Returns the frame."""
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).copy()
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         
         if self.mode:
@@ -249,6 +264,32 @@ class HandDetector:
             angle += 360.0
         return angle
 
+    def get_thumb_index_angle(self):
+        """Return the angle between thumb tip (4) and index tip (8) with vertex at index MCP (5)."""
+        if not self.lm_list or len(self.lm_list) < 9:
+            return 0.0
+        # Point A = thumb tip (4)
+        # Point B = index MCP (5)
+        # Point C = index tip (8)
+        x4, y4 = self.lm_list[4][1], self.lm_list[4][2]
+        x5, y5 = self.lm_list[5][1], self.lm_list[5][2]
+        x8, y8 = self.lm_list[8][1], self.lm_list[8][2]
+
+        dx_t, dy_t = x4 - x5, y5 - y4  # invert y
+        dx_i, dy_i = x8 - x5, y5 - y8  # invert y
+
+        dot_product = dx_t * dx_i + dy_t * dy_i
+        mag_t = math.hypot(dx_t, dy_t)
+        mag_i = math.hypot(dx_i, dy_i)
+
+        if mag_t == 0 or mag_i == 0:
+            return 0.0
+
+        cos_theta = dot_product / (mag_t * mag_i)
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        angle = math.degrees(math.acos(cos_theta))
+        return angle
+
     def find_distance(self, p1, p2, img, draw=True, r=10, t=3):
         """Return the pixel distance between two landmarks, the annotated frame, and line info."""
         x1, y1, _ = self.lm_list[p1][1:]
@@ -270,6 +311,18 @@ handDetector = HandDetector
 
 
 def main():
+    import subprocess
+    import platform
+    if platform.system() == "Linux":
+        try:
+            subprocess.run(
+                ["v4l2-ctl", "-d", "/dev/video0", "-c", "exposure_dynamic_framerate=0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
     cap = cv2.VideoCapture(0)
     detector = HandDetector()
     p_time = 0
