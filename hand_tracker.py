@@ -2,10 +2,55 @@ import cv2
 import mediapipe as mp
 import time
 import math
+import os
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+# Shim classes to mimic legacy mp.solutions.hands output structure
+class Classification:
+    def __init__(self, label):
+        self.label = label  # "Left" or "Right"
+
+class Handedness:
+    def __init__(self, classification):
+        self.classification = classification
+
+class Landmark:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+
+class HandLandmarks:
+    def __init__(self, landmark_list):
+        self.landmark = landmark_list
+
+class LegacyResults:
+    def __init__(self, hand_landmarks, handedness):
+        self.multi_hand_landmarks = []
+        if hand_landmarks:
+            for hl in hand_landmarks:
+                lms = [Landmark(lm.x, lm.y, lm.z) for lm in hl]
+                self.multi_hand_landmarks.append(HandLandmarks(lms))
+        
+        self.multi_handedness = []
+        if handedness:
+            for h in handedness:
+                classifications = []
+                for cat in h:
+                    label = cat.category_name
+                    if label == "Left":
+                        swapped_label = "Right"
+                    elif label == "Right":
+                        swapped_label = "Left"
+                    else:
+                        swapped_label = label
+                    classifications.append(Classification(swapped_label))
+                self.multi_handedness.append(Handedness(classifications))
 
 
 class HandDetector:
-    """Detects and tracks hand landmarks using MediaPipe."""
+    """Detects and tracks hand landmarks using MediaPipe Tasks API with a legacy interface wrapper."""
 
     TIP_IDS = [4, 8, 12, 16, 20]
 
@@ -15,32 +60,68 @@ class HandDetector:
         self.detection_con = detection_con
         self.track_con = track_con
 
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=self.mode,
-            max_num_hands=self.max_hands,
-            min_detection_confidence=self.detection_con,
-            min_tracking_confidence=self.track_con,
+        # Initialize detector using modern Tasks API
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(current_dir, 'hand_landmarker.task')
+        
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE if self.mode else vision.RunningMode.VIDEO,
+            num_hands=self.max_hands,
+            min_hand_detection_confidence=self.detection_con,
+            min_hand_presence_confidence=self.track_con,
         )
-        self.mp_draw = mp.solutions.drawing_utils
-        self.lm_list = []
+        self.detector = vision.HandLandmarker.create_from_options(options)
         self.results = None
+        self.lm_list = []
+        self._prev_timestamp = 0
 
-    
-    # Detection helpers
-    
+    def draw_landmarks(self, img, hand_lms):
+        """Draw hand connections and points using OpenCV."""
+        h, w, _ = img.shape
+        connections = [
+            (0, 1), (1, 2), (2, 3), (3, 4),
+            (5, 6), (6, 7), (7, 8),
+            (9, 10), (10, 11), (11, 12),
+            (13, 14), (14, 15), (15, 16),
+            (17, 18), (18, 19), (19, 20),
+            (0, 5), (5, 9), (9, 13), (13, 17), (0, 17)
+        ]
+        # Draw lines
+        for connection in connections:
+            p1, p2 = connection
+            if p1 < len(hand_lms.landmark) and p2 < len(hand_lms.landmark):
+                lm1 = hand_lms.landmark[p1]
+                lm2 = hand_lms.landmark[p2]
+                pt1 = (int(lm1.x * w), int(lm1.y * h))
+                pt2 = (int(lm2.x * w), int(lm2.y * h))
+                cv2.line(img, pt1, pt2, (255, 0, 255), 2)
+        # Draw points
+        for lm in hand_lms.landmark:
+            cx, cy = int(lm.x * w), int(lm.y * h)
+            cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
 
     def find_hands(self, img, draw=True):
         """Process a BGR frame and optionally draw landmarks. Returns the frame."""
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.results = self.hands.process(img_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        
+        if self.mode:
+            raw_res = self.detector.detect(mp_image)
+        else:
+            timestamp_ms = int(time.time() * 1000)
+            if timestamp_ms <= self._prev_timestamp:
+                timestamp_ms = self._prev_timestamp + 1
+            self._prev_timestamp = timestamp_ms
+            raw_res = self.detector.detect_for_video(mp_image, timestamp_ms)
+            
+        self.results = LegacyResults(raw_res.hand_landmarks, raw_res.handedness)
 
         if self.results.multi_hand_landmarks:
             for hand_lms in self.results.multi_hand_landmarks:
                 if draw:
-                    self.mp_draw.draw_landmarks(
-                        img, hand_lms, self.mp_hands.HAND_CONNECTIONS
-                    )
+                    self.draw_landmarks(img, hand_lms)
         return img
 
     def find_position(self, img, hand_no=0, draw=True):
@@ -50,34 +131,33 @@ class HandDetector:
         self.lm_list = []
 
         if self.results and self.results.multi_hand_landmarks:
-            my_hand = self.results.multi_hand_landmarks[hand_no]
-            h, w, _ = img.shape
+            if hand_no < len(self.results.multi_hand_landmarks):
+                my_hand = self.results.multi_hand_landmarks[hand_no]
+                h, w, _ = img.shape
 
-            for lm_id, lm in enumerate(my_hand.landmark):
-                cx, cy, cz = int(lm.x * w), int(lm.y * h), lm.z
-                x_list.append(cx)
-                y_list.append(cy)
-                self.lm_list.append([lm_id, cx, cy, cz])
+                for lm_id, lm in enumerate(my_hand.landmark):
+                    cx, cy, cz = int(lm.x * w), int(lm.y * h), lm.z
+                    x_list.append(cx)
+                    y_list.append(cy)
+                    self.lm_list.append([lm_id, cx, cy, cz])
+                    if draw:
+                        cv2.circle(img, (cx, cy), 5, (255, 0, 255), cv2.FILLED)
+
+                x_min, x_max = min(x_list), max(x_list)
+                y_min, y_max = min(y_list), max(y_list)
+                bbox = (x_min, y_min, x_max, y_max)
+
                 if draw:
-                    cv2.circle(img, (cx, cy), 5, (255, 0, 255), cv2.FILLED)
-
-            x_min, x_max = min(x_list), max(x_list)
-            y_min, y_max = min(y_list), max(y_list)
-            bbox = (x_min, y_min, x_max, y_max)
-
-            if draw:
-                cv2.rectangle(
-                    img,
-                    (x_min - 20, y_min - 20),
-                    (x_max + 20, y_max + 20),
-                    (0, 255, 0),
-                    2,
-                )
+                    cv2.rectangle(
+                        img,
+                        (x_min - 20, y_min - 20),
+                        (x_max + 20, y_max + 20),
+                        (0, 255, 0),
+                        2,
+                    )
 
         return self.lm_list, bbox
 
-    
-    # Finger-state helpers
     def fingers_up(self):
         """Return a list of 5 booleans (1/0) indicating which fingers are extended."""
         if not self.lm_list:
@@ -132,15 +212,17 @@ class HandDetector:
 
         return fingers
 
-    
-    # Orientation helpers
     def is_hand_flipped(self):
         """Return True if the palm is facing up (middle finger tip below wrist)."""
+        if not self.results or not self.results.multi_hand_landmarks:
+            return False
         landmarks = self.results.multi_hand_landmarks[0].landmark
         return landmarks[12].y > landmarks[0].y
 
     def is_hand_turned(self):
         """Return True if the hand is turned away from the camera."""
+        if not self.results or not self.results.multi_hand_landmarks:
+            return False
         landmarks = self.results.multi_hand_landmarks[0].landmark
         hand_type = self.results.multi_handedness[0].classification[0].label
 
@@ -153,8 +235,20 @@ class HandDetector:
             return True
         return False
 
-    
-    # Distance helper
+    def get_hand_angle(self):
+        """Return the angle of the hand in degrees (90 is straight up, 180 is left, 0 is right)."""
+        if not self.lm_list or len(self.lm_list) < 10:
+            return 90.0
+        # Landmark 0 is wrist, Landmark 9 is middle finger MCP
+        x0, y0 = self.lm_list[0][1], self.lm_list[0][2]
+        x9, y9 = self.lm_list[9][1], self.lm_list[9][2]
+        dx = x9 - x0
+        dy = y0 - y9  # invert y so pointing up has positive dy
+        angle = math.degrees(math.atan2(dy, dx))
+        if angle < 0:
+            angle += 360.0
+        return angle
+
     def find_distance(self, p1, p2, img, draw=True, r=10, t=3):
         """Return the pixel distance between two landmarks, the annotated frame, and line info."""
         x1, y1, _ = self.lm_list[p1][1:]
@@ -171,12 +265,10 @@ class HandDetector:
         return length, img, [x1, y1, x2, y2, cx, cy]
 
 
-
-# Backwards-compatible alias so existing imports keep working
+# Backwards-compatible alias
 handDetector = HandDetector
 
 
-# Quick demo / standalone test
 def main():
     cap = cv2.VideoCapture(0)
     detector = HandDetector()
@@ -190,7 +282,6 @@ def main():
         img = cv2.flip(img, 1)
         img = detector.find_hands(img)
         lm_list, _ = detector.find_position(img)
-        detector.fingers_up()
 
         if lm_list:
             print(lm_list[4])

@@ -1,5 +1,13 @@
 """Hand-gesture mouse controller backed by pyautogui."""
 
+import sys
+from unittest.mock import MagicMock
+# Mock tkinter to prevent pyautogui/pymsgbox import crashes on headless Linux systems
+mock_tk = MagicMock()
+mock_tk.TkVersion = 8.6
+sys.modules['tkinter'] = mock_tk
+sys.modules['_tkinter'] = MagicMock()
+
 import ctypes
 import time
 
@@ -19,10 +27,11 @@ SMOOTHENING = 6  # Cursor smoothing factor
 
 FINGER_CONFIG = {
     "move":       [0, 1, 0, 0, 0],
-    "left_click": [0, 1, 0, 0, 0],
-    "right_click":[0, 1, 1, 0, 0],
+    "left_click": [1, 1, 0, 0, 0], # Thumb + Index up
+    "right_click":[0, 1, 1, 0, 0], # Index + Middle up
     "drag":       [0, 1, 0, 0, 1],
-    "scroll":     [0, 1, 1, 1, 0],
+    "scroll_up":  [0, 1, 1, 1, 0], # Index + Middle + Ring up
+    "scroll_down":[0, 1, 1, 1, 1], # 4 fingers up (except thumb)
 }
 
 
@@ -61,11 +70,9 @@ class MouseController:
         pyautogui.click()
         cv2.circle(img, (x, y), 15, (0, 255, 0), cv2.FILLED)
 
-    def right_click(self, img, detector, finger1=8, finger2=12):
-        length, img, line_info = detector.find_distance(finger1, finger2, img)
-        if length < 30:
-            pyautogui.rightClick()
-            cv2.circle(img, (line_info[4], line_info[5]), 15, (0, 255, 0), cv2.FILLED)
+    def right_click(self, img, x, y):
+        pyautogui.rightClick()
+        cv2.circle(img, (x, y), 15, (0, 255, 0), cv2.FILLED)
 
     def drag(self, img, detector, x1, y1, frame_r, w_cam, h_cam, w_scr, h_scr,
              finger1=4, finger2=12, finger3=16):
@@ -107,10 +114,14 @@ class MouseController:
 
 # Utility
 def get_screen_resolution():
-    """Return the physical screen resolution, DPI-aware."""
-    user32 = ctypes.windll.user32
-    user32.SetProcessDPIAware()
-    return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    """Return the physical screen resolution, DPI-aware on Windows, with fallback on Linux/Mac."""
+    try:
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    except AttributeError:
+        # Fallback using pyautogui for non-Windows platforms
+        return pyautogui.size()
 
 
 
@@ -122,6 +133,7 @@ def main():
     detector = htm.HandDetector(max_hands=1)
     w_scr, h_scr = get_screen_resolution()
     mouse_ctrl = MouseController(SMOOTHENING)
+    scroll_counter = 0
 
     while True:
         success, img = cap.read()
@@ -140,34 +152,54 @@ def main():
             folded = detector.fingers_half_closed()
 
             if fingers and -z1 > 0.03:
+                angle = detector.get_hand_angle()
+                is_valid_orientation = (55 <= angle <= 125)
+
+                rect_color = (255, 0, 255) if is_valid_orientation else (0, 0, 255)
                 cv2.rectangle(
                     img,
                     (FRAME_R, FRAME_R),
                     (w_cam - FRAME_R, h_cam - FRAME_R),
-                    (255, 0, 255),
+                    rect_color,
                     2,
                 )
 
-                if fingers == FINGER_CONFIG["move"] and not folded[1]:
-                    mouse_ctrl.move(img, x1, y1, FRAME_R, w_cam, h_cam, w_scr, h_scr)
+                if not is_valid_orientation:
+                    cv2.putText(img, "Tilted Hand", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
-                elif folded == FINGER_CONFIG["left_click"]:
-                    mouse_ctrl.left_click(img, x1, y1)
+                if is_valid_orientation:
+                    if fingers == FINGER_CONFIG["move"] and not folded[1]:
+                        mouse_ctrl.move(img, x1, y1, FRAME_R, w_cam, h_cam, w_scr, h_scr)
+                        scroll_counter = 0
 
-                elif fingers == FINGER_CONFIG["right_click"]:
-                    mouse_ctrl.right_click(img, detector)
+                    elif fingers == FINGER_CONFIG["left_click"]:
+                        mouse_ctrl.left_click(img, x1, y1)
+                        scroll_counter = 0
 
-                elif fingers == FINGER_CONFIG["drag"]:
-                    thumb_tip = lm_list[4][1:]
-                    mouse_ctrl.drag(
-                        img, detector,
-                        thumb_tip[0], thumb_tip[1],
-                        FRAME_R, w_cam, h_cam, w_scr, h_scr,
-                    )
+                    elif fingers == FINGER_CONFIG["right_click"]:
+                        mouse_ctrl.right_click(img, x1, y1)
+                        scroll_counter = 0
 
-                elif fingers == FINGER_CONFIG["scroll"]:
-                    middle_y = lm_list[12][2]
-                    mouse_ctrl.scroll(img, detector, middle_y, FRAME_R, h_cam, h_scr)
+                    elif fingers == FINGER_CONFIG["drag"]:
+                        thumb_tip = lm_list[4][1:]
+                        mouse_ctrl.drag(
+                            img, detector,
+                            thumb_tip[0], thumb_tip[1],
+                            FRAME_R, w_cam, h_cam, w_scr, h_scr,
+                        )
+                        scroll_counter = 0
+
+                    elif fingers == FINGER_CONFIG["scroll_up"]:
+                        scroll_counter += 1
+                        if scroll_counter % 3 == 0:
+                            pyautogui.scroll(1)
+
+                    elif fingers == FINGER_CONFIG["scroll_down"]:
+                        scroll_counter += 1
+                        if scroll_counter % 3 == 0:
+                            pyautogui.scroll(-1)
+                    else:
+                        scroll_counter = 0
 
         c_time = time.time()
         fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0

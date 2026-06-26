@@ -1,5 +1,13 @@
 """Hand-gesture mouse controller backed by pynput."""
 
+import sys
+from unittest.mock import MagicMock
+# Mock tkinter to prevent pyautogui/pymsgbox import crashes on headless Linux systems
+mock_tk = MagicMock()
+mock_tk.TkVersion = 8.6
+sys.modules['tkinter'] = mock_tk
+sys.modules['_tkinter'] = MagicMock()
+
 import time
 
 import cv2
@@ -22,10 +30,11 @@ FINGER_CONFIG = {
     "all_up":     [1, 1, 1, 1, 1],
     "all_down":   [0, 0, 0, 0, 0],
     "move":       [0, 1, 0, 0, 0],
-    "right_click":[1, 1, 1, 1],    # fingers[1:]
-    "left_click": [0, 1, 1, 0, 0],
+    "right_click":[0, 1, 1, 0, 0], # Index + Middle up
+    "left_click": [1, 1, 0, 0, 0], # Thumb + Index up
     "drag":       [1, 0, 0, 0, 0],
-    "scroll":     [0, 1, 1, 1, 0],
+    "scroll_up":  [0, 1, 1, 1, 0], # Index + Middle + Ring up
+    "scroll_down":[0, 1, 1, 1, 1], # 4 fingers up (except thumb)
 }
 
 
@@ -56,6 +65,10 @@ def main():
     c_loc_x, c_loc_y = 0, 0
     dragging = False
 
+    left_clicked = False
+    right_clicked = False
+    scroll_counter = 0
+
     while True:
         success, img = cap.read()
         if not success:
@@ -73,60 +86,80 @@ def main():
         fingers = detector.fingers_up()
 
         if fingers:
+            angle = detector.get_hand_angle()
+            is_valid_orientation = (55 <= angle <= 125)
+
+            rect_color = (255, 0, 255) if is_valid_orientation else (0, 0, 255)
             cv2.rectangle(
                 img,
                 (FRAME_R, FRAME_R),
                 (W_CAM - FRAME_R, H_CAM - FRAME_R),
-                (255, 0, 255),
+                rect_color,
                 2,
             )
 
-            # Move — only index finger up, hand not fully open
-            if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
-                x3 = np.interp(x1, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
-                y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
-                c_loc_x = p_loc_x + (x3 - p_loc_x) / SMOOTHENING
-                c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
-                _mouse.position = (c_loc_x, c_loc_y)
-                cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                p_loc_x, p_loc_y = c_loc_x, c_loc_y
+            if not is_valid_orientation:
+                cv2.putText(img, "Tilted Hand", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
-            # Left click
-            if fingers == FINGER_CONFIG["left_click"]:
-                cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                pyautogui.click(duration=0.17)
+            if is_valid_orientation:
+                # Move — only index finger up, hand not fully open
+                if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
+                    x3 = np.interp(x1, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
+                    y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
+                    c_loc_x = p_loc_x + (x3 - p_loc_x) / SMOOTHENING
+                    c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
+                    _mouse.position = (c_loc_x, c_loc_y)
+                    cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+                    p_loc_x, p_loc_y = c_loc_x, c_loc_y
 
-            # Right click — check inner four fingers + thumb-to-pinky distance
-            if fingers[1:] == FINGER_CONFIG["right_click"]:
-                length, img, line_info = detector.find_distance(4, 17, img)
-                if length < 30:
-                    cv2.circle(img, (line_info[4], line_info[5]), 15, (0, 255, 0), cv2.FILLED)
-                    pyautogui.rightClick(duration=0.1)
+                # Left click (one-time trigger)
+                if fingers == FINGER_CONFIG["left_click"]:
+                    if not left_clicked:
+                        _mouse.click(Button.left)
+                        left_clicked = True
+                    cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+                else:
+                    left_clicked = False
 
-            # Drag — thumb only
-            if fingers == FINGER_CONFIG["drag"]:
-                if not dragging:
-                    start_drag()
-                    dragging = True
-                x4 = np.interp(x2, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
-                y4 = np.interp(y2, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
-                c_loc_x = p_loc_x + (x4 - p_loc_x) / SMOOTHENING
-                c_loc_y = p_loc_y + (y4 - p_loc_y) / SMOOTHENING
-                _mouse.position = (c_loc_x, c_loc_y)
-                cv2.circle(img, (x2, y2), 15, (0, 255, 0), cv2.FILLED)
-                p_loc_x, p_loc_y = c_loc_x, c_loc_y
-            else:
-                if dragging:
-                    stop_drag()
-                    dragging = False
+                # Right click (one-time trigger)
+                if fingers == FINGER_CONFIG["right_click"]:
+                    if not right_clicked:
+                        _mouse.click(Button.right)
+                        right_clicked = True
+                    cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+                else:
+                    right_clicked = False
 
-            # Scroll — index + middle + ring fingers up
-            if fingers == FINGER_CONFIG["scroll"]:
-                y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
-                c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
-                scroll_y = int((c_loc_y - p_loc_y) / 50)
-                if scroll_y != 0:
-                    _mouse.scroll(0, scroll_y)
+                # Drag — thumb only
+                if fingers == FINGER_CONFIG["drag"]:
+                    if not dragging:
+                        start_drag()
+                        dragging = True
+                    x4 = np.interp(x2, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
+                    y4 = np.interp(y2, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
+                    c_loc_x = p_loc_x + (x4 - p_loc_x) / SMOOTHENING
+                    c_loc_y = p_loc_y + (y4 - p_loc_y) / SMOOTHENING
+                    _mouse.position = (c_loc_x, c_loc_y)
+                    cv2.circle(img, (x2, y2), 15, (0, 255, 0), cv2.FILLED)
+                    p_loc_x, p_loc_y = c_loc_x, c_loc_y
+                else:
+                    if dragging:
+                        stop_drag()
+                        dragging = False
+
+                # Scroll Up — index + middle + ring fingers up
+                if fingers == FINGER_CONFIG["scroll_up"]:
+                    scroll_counter += 1
+                    if scroll_counter % 3 == 0:
+                        _mouse.scroll(0, 1)
+
+                # Scroll Down — 4 fingers up (except thumb)
+                elif fingers == FINGER_CONFIG["scroll_down"]:
+                    scroll_counter += 1
+                    if scroll_counter % 3 == 0:
+                        _mouse.scroll(0, -1)
+                else:
+                    scroll_counter = 0
 
         c_time = time.time()
         fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
