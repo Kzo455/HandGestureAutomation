@@ -265,104 +265,8 @@ def main():
             elif not is_valid_orientation:
                 cv2.putText(img, "Tilted Hand", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
-            if state.control_enabled and is_valid_orientation:
-                # Update last non-click gesture state
-                if fingers != FINGER_CONFIG["left_click"] and fingers != FINGER_CONFIG["right_click"]:
-                    if fingers == FINGER_CONFIG["move"]:
-                        state.last_non_click_gesture = "move"
-                    elif fingers in [FINGER_CONFIG["scroll_up"], FINGER_CONFIG["scroll_down"]]:
-                        state.last_non_click_gesture = None
-
-                # Cursor movement
-                if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
-                    x1, y1 = lm_list[8][1:3]
-                    x3 = np.interp(x1, (x_start, x_end), (0, w_scr))
-                    y3 = np.interp(y1, (y_start, y_end), (0, h_scr))
-                    c_loc_x = state.p_loc_x + (x3 - state.p_loc_x) / SMOOTHENING
-                    c_loc_y = state.p_loc_y + (y3 - state.p_loc_y) / SMOOTHENING
-                    input_ctrl.set_position(c_loc_x, c_loc_y)
-                    cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                    state.p_loc_x, state.p_loc_y = c_loc_x, c_loc_y
-
-                # Left Click & Drag logic
-                elif fingers == FINGER_CONFIG["left_click"]:
-                    x1, y1 = lm_list[8][1:3]
-                    thumb_index_angle = detector.get_thumb_index_angle()
-                    if len(detector.lm_list) >= 9:
-                        x4, y4 = detector.lm_list[4][1:3]
-                        x5, y5 = detector.lm_list[5][1:3]
-                        x8, y8 = detector.lm_list[8][1:3]
-                        cv2.line(img, (x4, y4), (x5, y5), (0, 0, 255), 2)
-                        cv2.line(img, (x8, y8), (x5, y5), (0, 0, 255), 2)
-                        cv2.putText(img, f"Angle: {int(thumb_index_angle)} deg", (x5 + 10, y5 + 10),
-                                    cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 0, 255), 2)
-
-                    if 60 <= thumb_index_angle <= 120:
-                        if state.left_click_start_time is None:
-                            state.left_click_start_time = time.time()
-                        
-                        if time.time() - state.left_click_start_time > 0.3:
-                            if not state.dragging and state.last_non_click_gesture == "move":
-                                input_ctrl.press_left()
-                                state.dragging = True
-                    else:
-                        if state.left_click_start_time is not None:
-                            if state.dragging:
-                                input_ctrl.release_left()
-                                state.dragging = False
-                            else:
-                                if time.time() - state.left_click_start_time >= 0.1:
-                                    if state.last_non_click_gesture == "move":
-                                        input_ctrl.click_left()
-                            state.left_click_start_time = None
-
-                    if state.dragging:
-                        x3 = np.interp(x1, (x_start, x_end), (0, w_scr))
-                        y3 = np.interp(y1, (y_start, y_end), (0, h_scr))
-                        c_loc_x = state.p_loc_x + (x3 - state.p_loc_x) / SMOOTHENING
-                        c_loc_y = state.p_loc_y + (y3 - state.p_loc_y) / SMOOTHENING
-                        input_ctrl.set_position(c_loc_x, c_loc_y)
-                        state.p_loc_x, state.p_loc_y = c_loc_x, c_loc_y
-
-                    cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-
-                # Reset click state if left click gesture stops
-                if fingers != FINGER_CONFIG["left_click"] and state.left_click_start_time is not None:
-                    if state.dragging:
-                        input_ctrl.release_left()
-                        state.dragging = False
-                    else:
-                        if time.time() - state.left_click_start_time >= 0.1:
-                            if state.last_non_click_gesture == "move":
-                                input_ctrl.click_left()
-                    state.left_click_start_time = None
-
-                # Right click
-                if fingers == FINGER_CONFIG["right_click"]:
-                    if state.right_click_start_time is None:
-                        state.right_click_start_time = time.time()
-                    x1, y1 = lm_list[8][1:3]
-                    cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                else:
-                    if state.right_click_start_time is not None:
-                        if time.time() - state.right_click_start_time >= 0.1:
-                            if state.last_non_click_gesture == "move":
-                                input_ctrl.click_right()
-                        state.right_click_start_time = None
-
-                # Scroll controls
-                if fingers == FINGER_CONFIG["scroll_up"]:
-                    state.scroll_counter += 1
-                    if state.scroll_counter % 3 == 0:
-                        input_ctrl.scroll(1)
-                elif fingers == FINGER_CONFIG["scroll_down"]:
-                    state.scroll_counter += 1
-                    if state.scroll_counter % 3 == 0:
-                        input_ctrl.scroll(-1)
-                else:
-                    state.scroll_counter = 0
-
-                # Volume control
+            if is_valid_orientation:
+                # Volume control (allowed even when control is off)
                 if fingers in [FINGER_CONFIG["volume_up"], FINGER_CONFIG["volume_down"]]:
                     if state.volume_start_time is None:
                         state.volume_start_time = time.time()
@@ -376,6 +280,104 @@ def main():
                             state.last_volume_change_time = time.time()
                 else:
                     state.volume_start_time = None
+
+                # Scroll controls (allowed even when control is off)
+                if fingers == FINGER_CONFIG["scroll_up"]:
+                    state.scroll_counter += 1
+                    if state.scroll_counter % 3 == 0:
+                        input_ctrl.scroll(1)
+                elif fingers == FINGER_CONFIG["scroll_down"]:
+                    state.scroll_counter += 1
+                    if state.scroll_counter % 3 == 0:
+                        input_ctrl.scroll(-1)
+                else:
+                    state.scroll_counter = 0
+
+                # Cursor, click, drag, right click (only when control is enabled)
+                if state.control_enabled:
+                    # Update last non-click gesture state
+                    if fingers != FINGER_CONFIG["left_click"] and fingers != FINGER_CONFIG["right_click"]:
+                        if fingers == FINGER_CONFIG["move"]:
+                            state.last_non_click_gesture = "move"
+                        elif fingers in [FINGER_CONFIG["scroll_up"], FINGER_CONFIG["scroll_down"]]:
+                            state.last_non_click_gesture = None
+
+                    # Cursor movement
+                    if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
+                        x1, y1 = lm_list[8][1:3]
+                        x3 = np.interp(x1, (x_start, x_end), (0, w_scr))
+                        y3 = np.interp(y1, (y_start, y_end), (0, h_scr))
+                        c_loc_x = state.p_loc_x + (x3 - state.p_loc_x) / SMOOTHENING
+                        c_loc_y = state.p_loc_y + (y3 - state.p_loc_y) / SMOOTHENING
+                        input_ctrl.set_position(c_loc_x, c_loc_y)
+                        cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+                        state.p_loc_x, state.p_loc_y = c_loc_x, c_loc_y
+
+                    # Left Click & Drag logic
+                    elif fingers == FINGER_CONFIG["left_click"]:
+                        x1, y1 = lm_list[8][1:3]
+                        thumb_index_angle = detector.get_thumb_index_angle()
+                        if len(detector.lm_list) >= 9:
+                            x4, y4 = detector.lm_list[4][1:3]
+                            x5, y5 = detector.lm_list[5][1:3]
+                            x8, y8 = detector.lm_list[8][1:3]
+                            cv2.line(img, (x4, y4), (x5, y5), (0, 0, 255), 2)
+                            cv2.line(img, (x8, y8), (x5, y5), (0, 0, 255), 2)
+                            cv2.putText(img, f"Angle: {int(thumb_index_angle)} deg", (x5 + 10, y5 + 10),
+                                        cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 0, 255), 2)
+
+                        if 60 <= thumb_index_angle <= 120:
+                            if state.left_click_start_time is None:
+                                state.left_click_start_time = time.time()
+                            
+                            if time.time() - state.left_click_start_time > 0.3:
+                                if not state.dragging and state.last_non_click_gesture == "move":
+                                    input_ctrl.press_left()
+                                    state.dragging = True
+                        else:
+                            if state.left_click_start_time is not None:
+                                if state.dragging:
+                                    input_ctrl.release_left()
+                                    state.dragging = False
+                                else:
+                                    if time.time() - state.left_click_start_time >= 0.1:
+                                        if state.last_non_click_gesture == "move":
+                                            input_ctrl.click_left()
+                                state.left_click_start_time = None
+
+                        if state.dragging:
+                            x3 = np.interp(x1, (x_start, x_end), (0, w_scr))
+                            y3 = np.interp(y1, (y_start, y_end), (0, h_scr))
+                            c_loc_x = state.p_loc_x + (x3 - state.p_loc_x) / SMOOTHENING
+                            c_loc_y = state.p_loc_y + (y3 - state.p_loc_y) / SMOOTHENING
+                            input_ctrl.set_position(c_loc_x, c_loc_y)
+                            state.p_loc_x, state.p_loc_y = c_loc_x, c_loc_y
+
+                        cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+
+                    # Reset click state if left click gesture stops
+                    if fingers != FINGER_CONFIG["left_click"] and state.left_click_start_time is not None:
+                        if state.dragging:
+                            input_ctrl.release_left()
+                            state.dragging = False
+                        else:
+                            if time.time() - state.left_click_start_time >= 0.1:
+                                if state.last_non_click_gesture == "move":
+                                    input_ctrl.click_left()
+                        state.left_click_start_time = None
+
+                    # Right click
+                    if fingers == FINGER_CONFIG["right_click"]:
+                        if state.right_click_start_time is None:
+                            state.right_click_start_time = time.time()
+                        x1, y1 = lm_list[8][1:3]
+                        cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
+                    else:
+                        if state.right_click_start_time is not None:
+                            if time.time() - state.right_click_start_time >= 0.1:
+                                if state.last_non_click_gesture == "move":
+                                    input_ctrl.click_right()
+                        state.right_click_start_time = None
             else:
                 state.scroll_counter = 0
                 state.volume_start_time = None
