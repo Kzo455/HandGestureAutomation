@@ -9,13 +9,15 @@ sys.modules['tkinter'] = mock_tk
 sys.modules['_tkinter'] = MagicMock()
 
 import time
-
+import subprocess
+import platform
+import json
+import os
 import cv2
 import numpy as np
 import pyautogui
-from pynput.mouse import Button, Controller
+from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
-_keyboard = KeyboardController()
 import sounddevice as sd
 
 import hand_tracker as htm
@@ -53,10 +55,10 @@ def play_sound_disable():
 
 
 # Constants
-
 W_CAM, H_CAM = 640, 480
-FRAME_R = 100        # Active gesture area margin (pixels)
-SMOOTHENING = 7      # Cursor smoothing factor
+SMOOTHENING = 10      # Cursor smoothing factor
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(_current_dir, "gesture_config.json")
 
 FINGER_CONFIG = {
     "all_up":          [1, 1, 1, 1, 1],
@@ -73,23 +75,134 @@ FINGER_CONFIG = {
 }
 
 
-# Drag helpers
-_mouse = Controller()
+class InputController:
+    """Handles OS-level mouse and keyboard simulations cleanly."""
+    def __init__(self):
+        self.mouse = MouseController()
+        self.keyboard = KeyboardController()
+
+    def set_position(self, x: float, y: float):
+        self.mouse.position = (int(x), int(y))
+
+    def press_left(self):
+        self.mouse.press(Button.left)
+
+    def release_left(self):
+        self.mouse.release(Button.left)
+
+    def click_left(self):
+        self.mouse.click(Button.left)
+
+    def click_right(self):
+        self.mouse.click(Button.right)
+
+    def scroll(self, direction: int):
+        self.mouse.scroll(0, direction)
+
+    def volume_up(self):
+        self.keyboard.press(Key.media_volume_up)
+        self.keyboard.release(Key.media_volume_up)
+
+    def volume_down(self):
+        self.keyboard.press(Key.media_volume_down)
+        self.keyboard.release(Key.media_volume_down)
 
 
-def start_drag():
-    _mouse.press(Button.left)
+class GestureStateManager:
+    """Manages noise-filtered state transitions, timers, and tracking zone size."""
+    def __init__(self):
+        self.control_enabled = False
+        self.dragging = False
+        self.p_loc_x, self.p_loc_y = 0.0, 0.0
+        
+        # Load customizable tracking box dimensions from file if exists
+        config = self.load_config()
+        self.frame_x = config.get("frame_x", W_CAM // 2)
+        self.frame_y = config.get("frame_y", H_CAM // 2)
+        self.frame_w = config.get("frame_w", 440)
+        self.frame_h = config.get("frame_h", 280)
+        
+        # State timers
+        self.enable_start_time = None
+        self.disable_start_time = None
+        self.left_click_start_time = None
+        self.right_click_start_time = None
+        self.volume_start_time = None
+        
+        self.last_volume_change_time = 0.0
+        self.scroll_counter = 0
+        self.last_non_click_gesture = None
+
+    def load_config(self) -> dict:
+        """Loads configuration from json file."""
+        default_config = {
+            "frame_x": W_CAM // 2,
+            "frame_y": H_CAM // 2,
+            "frame_w": 440,
+            "frame_h": 280
+        }
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r") as f:
+                    data = json.load(f)
+                    for k in default_config:
+                        if k in data and isinstance(data[k], int):
+                            default_config[k] = data[k]
+            except Exception:
+                pass
+        return default_config
+
+    def save_config(self) -> None:
+        """Saves current configuration to json file."""
+        config_data = {
+            "frame_x": self.frame_x,
+            "frame_y": self.frame_y,
+            "frame_w": self.frame_w,
+            "frame_h": self.frame_h
+        }
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(config_data, f, indent=4)
+        except Exception:
+            pass
+
+    def update_control_state(self, fingers: list) -> None:
+        """Processes enable/disable control gestures with 150ms verification delay."""
+        if fingers == FINGER_CONFIG["enable_control"]:
+            self.disable_start_time = None
+            if not self.control_enabled:
+                if self.enable_start_time is None:
+                    self.enable_start_time = time.time()
+                if time.time() - self.enable_start_time >= 0.15:
+                    self.control_enabled = True
+                    play_sound_enable()
+                    self.enable_start_time = None
+        elif fingers == FINGER_CONFIG["disable_control"]:
+            self.enable_start_time = None
+            if self.control_enabled:
+                if self.disable_start_time is None:
+                    self.disable_start_time = time.time()
+                if time.time() - self.disable_start_time >= 0.15:
+                    self.control_enabled = False
+                    play_sound_disable()
+                    self.disable_start_time = None
+                    if self.dragging:
+                        self.dragging = False
+        else:
+            self.enable_start_time = None
+            self.disable_start_time = None
+
+    def reset_temp_timers(self) -> None:
+        """Resets active timers when hand tracking is lost."""
+        self.left_click_start_time = None
+        self.right_click_start_time = None
+        self.volume_start_time = None
+        self.enable_start_time = None
+        self.disable_start_time = None
 
 
-def stop_drag():
-    _mouse.release(Button.left)
-
-
-
-# Main loop
-def main():
-    import subprocess
-    import platform
+def configure_camera():
+    """Applies optimal camera configuration for low exposure on Linux if possible."""
     if platform.system() == "Linux":
         try:
             subprocess.run(
@@ -100,29 +213,20 @@ def main():
         except Exception:
             pass
 
+
+def main():
+    configure_camera()
+
     cap = cv2.VideoCapture(0)
     cap.set(3, W_CAM)
     cap.set(4, H_CAM)
 
     detector = htm.HandDetector(max_hands=1)
+    input_ctrl = InputController()
+    state = GestureStateManager()
     w_scr, h_scr = pyautogui.size()
 
     p_time = 0
-    p_loc_x, p_loc_y = 0, 0
-    c_loc_x, c_loc_y = 0, 0
-    dragging = False
-    left_click_start_time = None
-    right_click_start_time = None
-    volume_start_time = None
-    last_volume_change_time = 0
-    enable_start_time = None
-    disable_start_time = None
-
-    left_clicked = False
-    right_clicked = False
-    scroll_counter = 0
-    control_enabled = False
-    last_non_click_gesture = None
 
     while True:
         success, img = cap.read()
@@ -133,84 +237,56 @@ def main():
         img = detector.find_hands(img)
         lm_list, _ = detector.find_position(img)
 
-        x1 = y1 = x2 = y2 = 0
-        if lm_list:
-            x1, y1, _ = lm_list[8][1:]
-            x2, y2, _ = lm_list[4][1:]
+        # Calculate bounding box bounds
+        x_start = max(0, state.frame_x - state.frame_w // 2)
+        x_end = min(W_CAM, state.frame_x + state.frame_w // 2)
+        y_start = max(0, state.frame_y - state.frame_h // 2)
+        y_end = min(H_CAM, state.frame_y + state.frame_h // 2)
 
         fingers = detector.fingers_up()
 
         if fingers:
-            # 1. Check for enable/disable gestures first with 150ms verification delay
-            if fingers == FINGER_CONFIG["enable_control"]:
-                disable_start_time = None
-                if not control_enabled:
-                    if enable_start_time is None:
-                        enable_start_time = time.time()
-                    if time.time() - enable_start_time >= 0.15:
-                        control_enabled = True
-                        play_sound_enable()
-                        enable_start_time = None
-            elif fingers == FINGER_CONFIG["disable_control"]:
-                enable_start_time = None
-                if control_enabled:
-                    if disable_start_time is None:
-                        disable_start_time = time.time()
-                    if time.time() - disable_start_time >= 0.15:
-                        control_enabled = False
-                        play_sound_disable()
-                        disable_start_time = None
-                        if dragging:
-                            stop_drag()
-                            dragging = False
-            else:
-                enable_start_time = None
-                disable_start_time = None
-
+            state.update_control_state(fingers)
             angle = detector.get_hand_angle()
             is_valid_orientation = (55 <= angle <= 125)
 
-            # Determine color and screen message
-            if not control_enabled:
+            # Determine visual representation color
+            if not state.control_enabled:
                 rect_color = (128, 128, 128)  # Gray
             elif is_valid_orientation:
-                rect_color = (255, 0, 255)  # Magenta
+                rect_color = (255, 0, 255)    # Magenta
             else:
-                rect_color = (0, 0, 255)  # Red
+                rect_color = (0, 0, 255)      # Red
 
-            cv2.rectangle(
-                img,
-                (FRAME_R, FRAME_R),
-                (W_CAM - FRAME_R, H_CAM - FRAME_R),
-                rect_color,
-                2,
-            )
+            cv2.rectangle(img, (x_start, y_start), (x_end, y_end), rect_color, 2)
 
-            if not control_enabled:
+            if not state.control_enabled:
                 cv2.putText(img, "CONTROL OFF", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (128, 128, 128), 2)
             elif not is_valid_orientation:
                 cv2.putText(img, "Tilted Hand", (20, 90), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
-            if control_enabled and is_valid_orientation:
-                # Update last non-click gesture state to ensure clicks only trigger after moving
+            if state.control_enabled and is_valid_orientation:
+                # Update last non-click gesture state
                 if fingers != FINGER_CONFIG["left_click"] and fingers != FINGER_CONFIG["right_click"]:
                     if fingers == FINGER_CONFIG["move"]:
-                        last_non_click_gesture = "move"
+                        state.last_non_click_gesture = "move"
                     elif fingers in [FINGER_CONFIG["scroll_up"], FINGER_CONFIG["scroll_down"]]:
-                        last_non_click_gesture = None
+                        state.last_non_click_gesture = None
 
-                # Move — only index finger up, hand not fully open
+                # Cursor movement
                 if fingers != FINGER_CONFIG["all_up"] and fingers == FINGER_CONFIG["move"]:
-                    x3 = np.interp(x1, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
-                    y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
-                    c_loc_x = p_loc_x + (x3 - p_loc_x) / SMOOTHENING
-                    c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
-                    _mouse.position = (int(c_loc_x), int(c_loc_y))
+                    x1, y1 = lm_list[8][1:3]
+                    x3 = np.interp(x1, (x_start, x_end), (0, w_scr))
+                    y3 = np.interp(y1, (y_start, y_end), (0, h_scr))
+                    c_loc_x = state.p_loc_x + (x3 - state.p_loc_x) / SMOOTHENING
+                    c_loc_y = state.p_loc_y + (y3 - state.p_loc_y) / SMOOTHENING
+                    input_ctrl.set_position(c_loc_x, c_loc_y)
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                    p_loc_x, p_loc_y = c_loc_x, c_loc_y
+                    state.p_loc_x, state.p_loc_y = c_loc_x, c_loc_y
 
-                # Left click and Drag/Hold (merged)
-                if fingers == FINGER_CONFIG["left_click"]:
+                # Left Click & Drag logic
+                elif fingers == FINGER_CONFIG["left_click"]:
+                    x1, y1 = lm_list[8][1:3]
                     thumb_index_angle = detector.get_thumb_index_angle()
                     if len(detector.lm_list) >= 9:
                         x4, y4 = detector.lm_list[4][1:3]
@@ -222,112 +298,135 @@ def main():
                                     cv2.FONT_HERSHEY_PLAIN, 1.5, (0, 0, 255), 2)
 
                     if 60 <= thumb_index_angle <= 120:
-                        if left_click_start_time is None:
-                            left_click_start_time = time.time()
+                        if state.left_click_start_time is None:
+                            state.left_click_start_time = time.time()
                         
-                        # Only start drag if held for > 300ms
-                        if time.time() - left_click_start_time > 0.3:
-                            if not dragging and last_non_click_gesture == "move":
-                                _mouse.press(Button.left)
-                                dragging = True
+                        if time.time() - state.left_click_start_time > 0.3:
+                            if not state.dragging and state.last_non_click_gesture == "move":
+                                input_ctrl.press_left()
+                                state.dragging = True
                     else:
-                        if left_click_start_time is not None:
-                            if dragging:
-                                _mouse.release(Button.left)
-                                dragging = False
+                        if state.left_click_start_time is not None:
+                            if state.dragging:
+                                input_ctrl.release_left()
+                                state.dragging = False
                             else:
-                                # Only click if gesture was held for at least 100ms (filters out noise)
-                                if time.time() - left_click_start_time >= 0.1:
-                                    if last_non_click_gesture == "move":
-                                        _mouse.click(Button.left)
-                            left_click_start_time = None
+                                if time.time() - state.left_click_start_time >= 0.1:
+                                    if state.last_non_click_gesture == "move":
+                                        input_ctrl.click_left()
+                            state.left_click_start_time = None
 
-                    if dragging:
-                        x3 = np.interp(x1, (FRAME_R, W_CAM - FRAME_R), (0, w_scr))
-                        y3 = np.interp(y1, (FRAME_R, H_CAM - FRAME_R), (0, h_scr))
-                        c_loc_x = p_loc_x + (x3 - p_loc_x) / SMOOTHENING
-                        c_loc_y = p_loc_y + (y3 - p_loc_y) / SMOOTHENING
-                        _mouse.position = (int(c_loc_x), int(c_loc_y))
-                        p_loc_x, p_loc_y = c_loc_x, c_loc_y
+                    if state.dragging:
+                        x3 = np.interp(x1, (x_start, x_end), (0, w_scr))
+                        y3 = np.interp(y1, (y_start, y_end), (0, h_scr))
+                        c_loc_x = state.p_loc_x + (x3 - state.p_loc_x) / SMOOTHENING
+                        c_loc_y = state.p_loc_y + (y3 - state.p_loc_y) / SMOOTHENING
+                        input_ctrl.set_position(c_loc_x, c_loc_y)
+                        state.p_loc_x, state.p_loc_y = c_loc_x, c_loc_y
 
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
-                else:
-                    if left_click_start_time is not None:
-                        if dragging:
-                            _mouse.release(Button.left)
-                            dragging = False
-                        else:
-                            # Only click if gesture was held for at least 100ms (filters out noise)
-                            if time.time() - left_click_start_time >= 0.1:
-                                if last_non_click_gesture == "move":
-                                    _mouse.click(Button.left)
-                        left_click_start_time = None
 
-                # Right click (with 100ms noise filter, triggers on release)
+                # Reset click state if left click gesture stops
+                if fingers != FINGER_CONFIG["left_click"] and state.left_click_start_time is not None:
+                    if state.dragging:
+                        input_ctrl.release_left()
+                        state.dragging = False
+                    else:
+                        if time.time() - state.left_click_start_time >= 0.1:
+                            if state.last_non_click_gesture == "move":
+                                input_ctrl.click_left()
+                    state.left_click_start_time = None
+
+                # Right click
                 if fingers == FINGER_CONFIG["right_click"]:
-                    if right_click_start_time is None:
-                        right_click_start_time = time.time()
+                    if state.right_click_start_time is None:
+                        state.right_click_start_time = time.time()
+                    x1, y1 = lm_list[8][1:3]
                     cv2.circle(img, (x1, y1), 15, (0, 255, 0), cv2.FILLED)
                 else:
-                    if right_click_start_time is not None:
-                        duration = time.time() - right_click_start_time
-                        if duration >= 0.1:
-                            if last_non_click_gesture == "move":
-                                _mouse.click(Button.right)
-                        right_click_start_time = None
+                    if state.right_click_start_time is not None:
+                        if time.time() - state.right_click_start_time >= 0.1:
+                            if state.last_non_click_gesture == "move":
+                                input_ctrl.click_right()
+                        state.right_click_start_time = None
 
-                # Scroll Up — index + middle + ring fingers up
+                # Scroll controls
                 if fingers == FINGER_CONFIG["scroll_up"]:
-                    scroll_counter += 1
-                    if scroll_counter % 3 == 0:
-                        _mouse.scroll(0, 1)
-
-                # Scroll Down — Index + Middle up
+                    state.scroll_counter += 1
+                    if state.scroll_counter % 3 == 0:
+                        input_ctrl.scroll(1)
                 elif fingers == FINGER_CONFIG["scroll_down"]:
-                    scroll_counter += 1
-                    if scroll_counter % 3 == 0:
-                        _mouse.scroll(0, -1)
+                    state.scroll_counter += 1
+                    if state.scroll_counter % 3 == 0:
+                        input_ctrl.scroll(-1)
                 else:
-                    scroll_counter = 0
+                    state.scroll_counter = 0
 
-                # Volume Control (with 100ms noise filter and 150ms throttling)
+                # Volume control
                 if fingers in [FINGER_CONFIG["volume_up"], FINGER_CONFIG["volume_down"]]:
-                    if volume_start_time is None:
-                        volume_start_time = time.time()
+                    if state.volume_start_time is None:
+                        state.volume_start_time = time.time()
                     
-                    if time.time() - volume_start_time >= 0.1:  # 100ms noise filter
-                        if time.time() - last_volume_change_time >= 0.15:  # Throttle volume adjustments
+                    if time.time() - state.volume_start_time >= 0.1:
+                        if time.time() - state.last_volume_change_time >= 0.15:
                             if fingers == FINGER_CONFIG["volume_up"]:
-                                _keyboard.press(Key.media_volume_up)
-                                _keyboard.release(Key.media_volume_up)
+                                input_ctrl.volume_up()
                             else:
-                                _keyboard.press(Key.media_volume_down)
-                                _keyboard.release(Key.media_volume_down)
-                            last_volume_change_time = time.time()
+                                input_ctrl.volume_down()
+                            state.last_volume_change_time = time.time()
                 else:
-                    volume_start_time = None
+                    state.volume_start_time = None
             else:
-                left_clicked = False
-                right_clicked = False
-                scroll_counter = 0
-                volume_start_time = None
+                state.scroll_counter = 0
+                state.volume_start_time = None
         else:
-            left_click_start_time = None
-            right_click_start_time = None
-            volume_start_time = None
-            enable_start_time = None
-            disable_start_time = None
+            state.reset_temp_timers()
 
         c_time = time.time()
         fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
         p_time = c_time
 
         cv2.putText(img, str(int(fps)), (20, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 0), 3)
+        cv2.putText(img, "Adjust Box: W/A/S/D (Move) | [ / ] (Width) | - / = (Height)", (20, H_CAM - 20),
+                    cv2.FONT_HERSHEY_PLAIN, 1.1, (255, 255, 255), 1)
         cv2.imshow("Mouse Controller (pynput)", img)
 
         key = cv2.waitKey(1)
         if key & 0xFF in (ord("q"), 27):
             break
+        
+        # Adjusting state variables with saving configuration
+        config_changed = False
+        
+        # Move tracking rectangle
+        if key & 0xFF == ord("w"):
+            state.frame_y = max(state.frame_h // 2, state.frame_y - 10)
+            config_changed = True
+        elif key & 0xFF == ord("s"):
+            state.frame_y = min(H_CAM - state.frame_h // 2, state.frame_y + 10)
+            config_changed = True
+        elif key & 0xFF == ord("a"):
+            state.frame_x = max(state.frame_w // 2, state.frame_x - 10)
+            config_changed = True
+        elif key & 0xFF == ord("d"):
+            state.frame_x = min(W_CAM - state.frame_w // 2, state.frame_x + 10)
+            config_changed = True
+        # Resize tracking rectangle
+        elif key & 0xFF == ord("["):
+            state.frame_w = max(100, state.frame_w - 10)
+            config_changed = True
+        elif key & 0xFF == ord("]"):
+            state.frame_w = min(W_CAM, state.frame_w + 10)
+            config_changed = True
+        elif key & 0xFF == ord("-"):
+            state.frame_h = max(100, state.frame_h - 10)
+            config_changed = True
+        elif key & 0xFF == ord("="):
+            state.frame_h = min(H_CAM, state.frame_h + 10)
+            config_changed = True
+            
+        if config_changed:
+            state.save_config()
 
     cap.release()
     cv2.destroyAllWindows()

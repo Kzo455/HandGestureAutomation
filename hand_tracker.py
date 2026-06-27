@@ -5,24 +5,26 @@ import math
 import os
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+import numpy as np
+from typing import List, Tuple, Optional
 
 # Shim classes to mimic legacy mp.solutions.hands output structure
 class Classification:
-    def __init__(self, label):
+    def __init__(self, label: str):
         self.label = label  # "Left" or "Right"
 
 class Handedness:
-    def __init__(self, classification):
+    def __init__(self, classification: List[Classification]):
         self.classification = classification
 
 class Landmark:
-    def __init__(self, x, y, z):
+    def __init__(self, x: float, y: float, z: float):
         self.x = x
         self.y = y
         self.z = z
 
 class HandLandmarks:
-    def __init__(self, landmark_list):
+    def __init__(self, landmark_list: List[Landmark]):
         self.landmark = landmark_list
 
 class LegacyResults:
@@ -54,7 +56,7 @@ class HandDetector:
 
     TIP_IDS = [4, 8, 12, 16, 20]
 
-    def __init__(self, mode=False, max_hands=2, detection_con=0.5, track_con=0.5):
+    def __init__(self, mode: bool = False, max_hands: int = 2, detection_con: float = 0.5, track_con: float = 0.5):
         self.mode = mode
         self.max_hands = max_hands
         self.detection_con = detection_con
@@ -92,8 +94,10 @@ class HandDetector:
         self.lm_list = []
         self._prev_timestamp = 0
 
-    def draw_landmarks(self, img, hand_lms):
+    def draw_landmarks(self, img: np.ndarray, hand_lms: HandLandmarks) -> None:
         """Draw hand connections and points using OpenCV."""
+        if img is None:
+            return
         h, w, _ = img.shape
         connections = [
             (0, 1), (1, 2), (2, 3), (3, 4),
@@ -117,8 +121,10 @@ class HandDetector:
             cx, cy = int(lm.x * w), int(lm.y * h)
             cv2.circle(img, (cx, cy), 5, (0, 255, 0), cv2.FILLED)
 
-    def find_hands(self, img, draw=True):
+    def find_hands(self, img: np.ndarray, draw: bool = True) -> np.ndarray:
         """Process a BGR frame and optionally draw landmarks. Returns the frame."""
+        if img is None:
+            return img
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).copy()
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
         
@@ -139,10 +145,12 @@ class HandDetector:
                     self.draw_landmarks(img, hand_lms)
         return img
 
-    def find_position(self, img, hand_no=0, draw=True):
+    def find_position(self, img: np.ndarray, hand_no: int = 0, draw: bool = True) -> Tuple[List[List], Tuple[int, int, int, int] | Tuple[()]]:
         """Return a list of [id, cx, cy, cz] for each landmark and a bounding box."""
+        if img is None:
+            return [], ()
         x_list, y_list = [], []
-        bbox = []
+        bbox = ()
         self.lm_list = []
 
         if self.results and self.results.multi_hand_landmarks:
@@ -158,18 +166,19 @@ class HandDetector:
                     if draw:
                         cv2.circle(img, (cx, cy), 5, (255, 0, 255), cv2.FILLED)
 
-                x_min, x_max = min(x_list), max(x_list)
-                y_min, y_max = min(y_list), max(y_list)
-                bbox = (x_min, y_min, x_max, y_max)
+                if x_list and y_list:
+                    x_min, x_max = min(x_list), max(x_list)
+                    y_min, y_max = min(y_list), max(y_list)
+                    bbox = (x_min, y_min, x_max, y_max)
 
-                if draw:
-                    cv2.rectangle(
-                        img,
-                        (x_min - 20, y_min - 20),
-                        (x_max + 20, y_max + 20),
-                        (0, 255, 0),
-                        2,
-                    )
+                    if draw:
+                        cv2.rectangle(
+                            img,
+                            (x_min - 20, y_min - 20),
+                            (x_max + 20, y_max + 20),
+                            (0, 255, 0),
+                            2,
+                        )
 
         return self.lm_list, bbox
 
